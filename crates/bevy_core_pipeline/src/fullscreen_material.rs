@@ -32,7 +32,8 @@ use bevy_render::{
         TextureSampleType, TextureViewId,
     },
     renderer::{RenderContext, RenderDevice, ViewQuery},
-    view::ViewTarget,
+    //view::ViewTarget,
+    view::{ViewTarget, ViewDepthTexture},
     RenderApp, RenderStartup,
 };
 use bevy_shader::ShaderRef;
@@ -127,6 +128,9 @@ fn init_pipeline<T: FullscreenMaterial>(
                 texture_2d(TextureSampleType::Float { filterable: true }),
                 sampler(SamplerBindingType::Filtering),
                 uniform_buffer::<T>(true),
+                // New: depth texture binding
+                texture_2d(TextureSampleType::Depth),
+                
             ),
         ),
     );
@@ -175,11 +179,11 @@ fn init_pipeline<T: FullscreenMaterial>(
 
 #[derive(Default)]
 struct FullscreenMaterialBindGroupCache {
-    cached: Option<(TextureViewId, BindGroup)>,
+    cached: Option<((TextureViewId, TextureViewId), BindGroup)>,
 }
 
 fn fullscreen_material_system<T: FullscreenMaterial>(
-    view: ViewQuery<(&ViewTarget, &DynamicUniformIndex<T>)>,
+    view: ViewQuery<(&ViewTarget, &ViewDepthTexture, &DynamicUniformIndex<T>)>,
     fullscreen_pipeline: Option<Res<FullscreenMaterialPipeline<T>>>,
     pipeline_cache: Res<PipelineCache>,
     data_uniforms: Res<ComponentUniforms<T>>,
@@ -190,7 +194,7 @@ fn fullscreen_material_system<T: FullscreenMaterial>(
         return;
     };
 
-    let (view_target, settings_index) = view.into_inner();
+    let (view_target, view_depth, settings_index) = view.into_inner();
 
     let pipeline_id = if view_target.is_hdr() {
         fullscreen_pipeline.pipeline_id_hdr
@@ -210,8 +214,14 @@ fn fullscreen_material_system<T: FullscreenMaterial>(
     let source = post_process.source;
     let destination = post_process.destination;
 
+    let depth_id = view_depth.view().id();
+
+
     let bind_group = match &mut cache.cached {
-        Some((texture_id, bind_group)) if source.id() == *texture_id => bind_group,
+        Some(((texture_id, cached_depth_id), bind_group)) if source.id() == *texture_id && depth_id == *cached_depth_id =>
+    {
+        bind_group
+    }
         cached => {
             let bind_group = ctx.render_device().create_bind_group(
                 "fullscreen_material_bind_group",
@@ -220,10 +230,11 @@ fn fullscreen_material_system<T: FullscreenMaterial>(
                     source,
                     &fullscreen_pipeline.sampler,
                     settings_binding.clone(),
+                    view_depth.view(),
                 )),
             );
 
-            let (_, bind_group) = cached.insert((source.id(), bind_group));
+            let (_, bind_group) = cached.insert(((source.id(), depth_id), bind_group));
             bind_group
         }
     };
